@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environments
+venv/
+.env
+
+# VS Code
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Models
+*.pth
+
+# Outputs
+outputs/
+
+# Datasets
+data/raw/
+data/processed/
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
