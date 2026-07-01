@@ -15,7 +15,7 @@ MODEL_DIR = "models"
 MODEL_PATH = os.path.join(MODEL_DIR, "best_model.pth")
 
 BATCH_SIZE = 32
-EPOCHS = 3
+EPOCHS = 5
 LEARNING_RATE = 1e-4
 IMG_SIZE = 224
 NUM_CLASSES = 4
@@ -133,7 +133,27 @@ def train():
 
     model = create_model().to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    train_labels = [dataset.df.iloc[i]["damage_label"] for i in train_dataset.indices]
+    train_labels = pd.Series(train_labels).astype(int)
+
+    class_counts = train_labels.value_counts().sort_index()
+    class_counts = class_counts.reindex(range(NUM_CLASSES), fill_value=0)
+
+    class_weights = len(train_labels) / (NUM_CLASSES * class_counts)
+    class_weights = class_weights.replace([float("inf")], 0)
+
+    class_weights_tensor = torch.tensor(
+        class_weights.values,
+        dtype=torch.float
+    ).to(device)
+
+    print("\nClass counts in training split:")
+    print(class_counts)
+
+    print("\nClass weights:")
+    print(class_weights)
+
+    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     best_val_acc = 0.0
