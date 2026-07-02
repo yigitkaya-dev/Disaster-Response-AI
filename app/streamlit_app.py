@@ -24,23 +24,17 @@ def load_image(path):
 def load_labels(label_path):
     with open(label_path) as f:
         data = json.load(f)
-    features = []
-    if isinstance(data, dict):
-        feat_container = data.get("features", data)
-        if isinstance(feat_container, dict):
-            lng_lat = feat_container.get("lng_lat")
-            if isinstance(lng_lat, list):
-                features = lng_lat
-            elif isinstance(feat_container.get("features"), list):
-                features = feat_container.get("features", [])
-            else:
-                for v in feat_container.values():
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        features = v
-                        break
-        elif isinstance(feat_container, list):
-            features = feat_container
-    return features
+    feat_container = data.get("features", data)
+    if isinstance(feat_container, dict):
+        xy = feat_container.get("xy")
+        if isinstance(xy, list):
+            return xy
+        lng_lat = feat_container.get("lng_lat")
+        if isinstance(lng_lat, list):
+            return lng_lat  # fallback only — needs a geotransform to be pixel-accurate
+    elif isinstance(feat_container, list):
+        return feat_container
+    return []
 
 def normalize_damage(text):
     if not text:
@@ -63,51 +57,32 @@ def parse_polygon(poly_string):
     return points
 
 def get_all_pixel_coords(features, img_width=1024, img_height=1024, flip_y=True, y_offset=0, x_offset=0):
-    all_coords = []
-    for feature in features:
+    scaled_dict = {}
+    for i, feature in enumerate(features):
         if not isinstance(feature, dict):
             continue
-        poly_data = feature.get("xy") or feature.get("wkt") or feature.get("lng_lat")
+        poly_data = feature.get("xy") or feature.get("wkt")
         if poly_data:
             coords = parse_polygon(poly_data)
             if len(coords) >= 3:
-                all_coords.append(coords)
-   
-    if not all_coords:
-        return {}
-   
-    all_x = [p[0] for coords in all_coords for p in coords]
-    all_y = [p[1] for coords in all_coords for p in coords]
-    minx, maxx = min(all_x), max(all_x)
-    miny, maxy = min(all_y), max(all_y)
-   
-    if maxx == minx or maxy == miny:
-        return {i: coords for i, coords in enumerate(all_coords)}
-   
-    scaled_dict = {}
-    for i, coords in enumerate(all_coords):
-        scaled = []
-        for x, y in coords:
-            sx = (x - minx) / (maxx - minx) * (img_width - 1) + x_offset
-            sy = (y - miny) / (maxy - miny) * (img_height - 1)
-            if flip_y:
-                sy = img_height - 1 - sy
-            sy += y_offset
-            scaled.append([sx, sy])
-        scaled_dict[i] = scaled
+                scaled_dict[i] = coords
     return scaled_dict
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
     st.header("Dataset Paths")
-    xbd_root = st.text_input("Path to xbd folder", value="./data/xbd")
-    
+    xbd_root = st.text_input("Path to xBD folder", value="./data/raw")
+
     if os.path.exists(xbd_root):
-        available_splits = [d for d in os.listdir(xbd_root) if os.path.isdir(os.path.join(xbd_root, d))]
+        available_splits = [
+            d for d in os.listdir(xbd_root)
+            if os.path.isdir(os.path.join(xbd_root, d))
+        ]
     else:
-        available_splits = ["tier1", "hold", "test", "tier3"]
+        available_splits = ["train", "hold"]
+
     split = st.selectbox("Select split", available_splits)
-  
+
     st.header("Visualization Controls")
     damage_threshold = st.slider("Minimum damage level to show", 0, 3, 0)
     show_polygons = st.checkbox("Show building polygons", True)
