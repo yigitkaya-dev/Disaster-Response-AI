@@ -4,9 +4,10 @@ from PIL import Image
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, WeightedRandomSampler
 from torchvision import transforms, models
 from tqdm import tqdm
+from sklearn.metrics import f1_score
 
 # Constants
 LABELS_CSV = "data/processed/train/labels.csv"
@@ -15,7 +16,7 @@ MODEL_DIR = "models"
 MODEL_PATH = os.path.join(MODEL_DIR, "best_model.pth")
 
 BATCH_SIZE = 32
-EPOCHS = 5
+EPOCHS = 15
 LEARNING_RATE = 1e-4
 IMG_SIZE = 224
 NUM_CLASSES = 4
@@ -42,7 +43,7 @@ class XBDPrePostDataset(Dataset):
         if self.transform:
             pre_img = self.transform(pre_img)
             post_img = self.transform(post_img)
-        
+
         combined_img = torch.cat([pre_img, post_img], dim=0)
 
         return combined_img, label
@@ -66,7 +67,7 @@ def create_model():
         bias=False
     )
 
-    # Initialize the new convolutional layer's weights by copying the 
+    # Initialize the new convolutional layer's weights by copying the
     # pretrained weights for the first 3 channels and duplicating them for the next 3 channels
     with torch.no_grad():
         model.conv1.weight[:, :3, :, :] = old_conv.weight
@@ -115,10 +116,36 @@ def train():
 
     pin_memory = device.type == "cuda"
 
+    # --- Compute class counts / per-sample weights for the training split ---
+    train_labels = [dataset.df.iloc[i]["damage_label"] for i in train_dataset.indices]
+    train_labels = pd.Series(train_labels).astype(int)
+
+    class_counts = train_labels.value_counts().sort_index()
+    class_counts = class_counts.reindex(range(NUM_CLASSES), fill_value=0)
+
+    print("\nClass counts in training split:")
+    print(class_counts)
+
+    # Inverse frequency per class -> used only for the sampler now, not the loss
+    sample_weight_per_class = 1.0 / class_counts.replace(0, 1)  # avoid div-by-zero
+
+    print("\nSampling weight per class:")
+    print(sample_weight_per_class)
+
+    # Map each training sample to its class's sampling weight
+    sample_weights = train_labels.map(sample_weight_per_class).values
+    sample_weights_tensor = torch.tensor(sample_weights, dtype=torch.double)
+
+    sampler = WeightedRandomSampler(
+        weights=sample_weights_tensor,
+        num_samples=len(sample_weights_tensor),
+        replacement=True
+    )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=True,
+        sampler=sampler,   # replaces shuffle=True — balances classes seen per batch
         num_workers=4,
         pin_memory=pin_memory
     )
@@ -126,37 +153,18 @@ def train():
     val_loader = DataLoader(
         val_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=False,
+        shuffle=False,      # keep val set in its natural (imbalanced) distribution
         num_workers=4,
         pin_memory=pin_memory
     )
 
     model = create_model().to(device)
 
-    train_labels = [dataset.df.iloc[i]["damage_label"] for i in train_dataset.indices]
-    train_labels = pd.Series(train_labels).astype(int)
-
-    class_counts = train_labels.value_counts().sort_index()
-    class_counts = class_counts.reindex(range(NUM_CLASSES), fill_value=0)
-
-    class_weights = len(train_labels) / (NUM_CLASSES * class_counts)
-    class_weights = class_weights.replace([float("inf")], 0)
-
-    class_weights_tensor = torch.tensor(
-        class_weights.values,
-        dtype=torch.float
-    ).to(device)
-
-    print("\nClass counts in training split:")
-    print(class_counts)
-
-    print("\nClass weights:")
-    print(class_weights)
-
-    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+    # Loss is unweighted now — balancing is handled by the sampler instead
+    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    best_val_acc = 0.0
+    best_val_f1 = 0.0
 
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch + 1}/{EPOCHS}")
@@ -191,6 +199,9 @@ def train():
         val_correct = 0
         val_total = 0
 
+        all_preds = []
+        all_labels = []
+
         with torch.no_grad():
             for images, labels in tqdm(val_loader, desc="Validation"):
                 images = images.to(device, non_blocking=True)
@@ -205,19 +216,31 @@ def train():
                 val_total += labels.size(0)
                 val_correct += (predicted == labels).sum().item()
 
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
         val_acc = val_correct / val_total
+
+        # Macro-F1 weights every class equally, regardless of how many
+        # samples it has — unlike accuracy, it won't be dominated by no-damage.
+        val_macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
+        per_class_f1 = f1_score(all_labels, all_preds, average=None, zero_division=0)
 
         print(f"Train Loss: {train_loss / len(train_loader):.4f}")
         print(f"Train Accuracy: {train_acc:.4f}")
         print(f"Val Loss: {val_loss / len(val_loader):.4f}")
         print(f"Val Accuracy: {val_acc:.4f}")
+        print(f"Val Macro-F1: {val_macro_f1:.4f}")
+        print(f"Per-class F1 [no-damage, minor-damage, major-damage, destroyed]: "
+              f"{[round(f, 4) for f in per_class_f1]}")
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_macro_f1 > best_val_f1:
+            best_val_f1 = val_macro_f1
 
             torch.save({
                 "model_state_dict": model.state_dict(),
-                "val_accuracy": best_val_acc,
+                "val_accuracy": val_acc,
+                "val_macro_f1": best_val_f1,
                 "class_names": [
                     "no-damage",
                     "minor-damage",
@@ -230,7 +253,7 @@ def train():
             print(f"Saved new best model: {MODEL_PATH}")
 
     print("\nTraining complete.")
-    print(f"Best validation accuracy: {best_val_acc:.4f}")
+    print(f"Best validation macro-F1: {best_val_f1:.4f}")
 
 
 if __name__ == "__main__":
