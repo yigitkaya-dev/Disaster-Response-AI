@@ -25,7 +25,7 @@ if PROJECT_ROOT not in sys.path:
 
 from src.building_mask_prediction import predict_single_image
 from src.predict import predict
-
+from src.recommend import generate_resource_recommendations
 
 # ============================================================
 # CONSTANTS
@@ -576,7 +576,51 @@ with ai_tab:
                     f"**Buildings classified above confidence "
                     f"threshold:** {len(predictions)}"
                 )
+                # ============================================================
+                # RESOURCE ALLOCATION
+                # ============================================================
 
+                resources = generate_resource_recommendations(counts)
+
+                st.subheader("Emergency Resource Allocation")
+
+                priority = resources["priority"]
+
+                st.metric(
+                    "Response Priority",
+                    priority
+                )
+
+                st.write(
+                    f"**Severely damaged buildings:** "
+                    f'{resources["severe_percentage"]:.1f}%'
+                )
+
+                resource_col1, resource_col2, resource_col3, resource_col4 = st.columns(4)
+
+                with resource_col1:
+                    st.metric(
+                        "Search & Rescue Teams",
+                        resources["search_rescue_teams"]
+                    )
+
+                with resource_col2:
+                    st.metric(
+                        "Medical Units",
+                        resources["medical_units"]
+                    )
+
+                with resource_col3:
+                    st.metric(
+                        "Shelter Units",
+                        resources["shelter_units"]
+                    )
+
+                with resource_col4:
+                    st.metric(
+                        "Inspection Teams",
+                        resources["inspection_teams"]
+                    )
                 if predictions:
                     st.subheader("Building-Level Predictions")
 
