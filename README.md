@@ -164,3 +164,4 @@ Python, PyTorch, OpenCV, NumPy, Pandas, Streamlit, Scikit-learn, Shapely
 ## Acknowledgments
 
 Built as part of CAP 6951 at Florida Atlantic University. Thanks to the creators of the [xBD dataset](https://xview2.org/) for making annotated satellite imagery publicly available for disaster response research.
+- L. Wang et al., “UNetFormer: A UNet-like transformer for efficient semantic segmentation of remote sensing urban scene imagery,” ISPRS J. Photogramm. Remote Sens., vol. 190, pp. 196–214, 2022.
